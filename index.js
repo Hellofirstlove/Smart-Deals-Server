@@ -53,7 +53,6 @@ async function run() {
             const email = req.query.email;
             const query = {};
             if (email) {
-                // Match either email or seller_email
                 query.$or = [{ email: email }, { seller_email: email }];
             }
 
@@ -84,7 +83,7 @@ async function run() {
                 newProduct.created_at = new Date().toISOString();
             }
             if (!newProduct.status) {
-                newProduct.status = 'pending';
+                newProduct.status = 'active';
             }
             const result = await productsCollection.insertOne(newProduct);
             res.send(result);
@@ -98,7 +97,7 @@ async function run() {
             res.send(result);
         });
 
-        // Update product (supports Edit & Make Sold)
+        // Update product (supports Edit, Make Sold, Status updates)
         app.patch("/products/:id", async (req, res) => {
             const id = req.params.id;
             const updatedProduct = req.body;
@@ -132,14 +131,43 @@ async function run() {
             res.send(result);
         });
 
-        // Post a new bid
+        // Post a new bid (WITH VALIDATION: blocks sold products & owner bids)
         app.post('/bids', async (req, res) => {
             const newBid = req.body;
-            if (!newBid.created_at) {
-                newBid.created_at = new Date().toISOString();
+
+            if (!newBid.productId || !newBid.buyer_email) {
+                return res.status(400).send({ message: 'Product ID and buyer email are required.' });
             }
-            const result = await bidsCollection.insertOne(newBid);
-            res.send(result);
+
+            try {
+                const product = await productsCollection.findOne({ _id: new ObjectId(newBid.productId) });
+                if (!product) {
+                    return res.status(404).send({ message: 'Product not found.' });
+                }
+
+                // 1. Validation: Block bidding on sold products
+                if (product.status === 'sold') {
+                    return res.status(400).send({ message: 'This product has already been sold. Bidding is closed.' });
+                }
+
+                // 2. Validation: Block sellers from bidding on their own product
+                if (product.seller_email === newBid.buyer_email || product.email === newBid.buyer_email) {
+                    return res.status(400).send({ message: 'You cannot place a bid on your own product.' });
+                }
+
+                if (!newBid.created_at) {
+                    newBid.created_at = new Date().toISOString();
+                }
+                if (!newBid.status) {
+                    newBid.status = 'pending';
+                }
+
+                const result = await bidsCollection.insertOne(newBid);
+                res.send(result);
+            } catch (error) {
+                console.error('Error posting bid:', error);
+                res.status(500).send({ message: 'Server error while placing bid.' });
+            }
         });
 
         // Get bid by ID
@@ -158,7 +186,7 @@ async function run() {
             res.send(result);
         });
 
-        // Patch bid (update status like accepted / rejected)
+        // Patch bid (update status: accepted / rejected)
         app.patch('/bids/:id', async (req, res) => {
             const id = req.params.id;
             const updatedBid = req.body;
@@ -174,7 +202,7 @@ async function run() {
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
-        // Keep connection alive
+        // Keep connection open while server runs
     }
 }
 run().catch(console.dir);
